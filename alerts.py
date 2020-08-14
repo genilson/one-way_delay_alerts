@@ -18,13 +18,16 @@ group.add_argument('-c', '--client', dest='host', metavar='host', help='run in c
                    <host>')
 
 client_server_group = parser.add_argument_group('Client/Server')
-client_server_group.add_argument('-p','--port', dest='port', metavar='#', type=int, default=6000, help='server port to listen on/connect to')
-client_server_group.add_argument('-a', '--alert-port', dest='alert_port', metavar='#', type=int, default=6000, help='port in which to send/sniff alert packets')
+client_server_group.add_argument('-p','--port', dest='port', metavar='#', type=int, default=5000, help='server port to listen on/connect to (default 5000')
+client_server_group.add_argument('-a', '--alert-port', dest='alert_port', metavar='#', type=int, default=6000,
+                                 help='port in which to send/sniff alert packets (default 6000')
 
 server_group = parser.add_argument_group('Server specific')
 
 client_group = parser.add_argument_group('Client specific')
-client_group.add_argument('-n', '--num-packets', type=int, dest='num_pkts', metavar='#', default=50, help='number of packets to send')
+client_group.add_argument('-n', '--num-packets', type=int, dest='num_pkts', metavar='#', default=50, help='number of packets to send (default 50)')
+# Interpacket gap in seconds. Default is 10 milliseconds
+client_group.add_argument('-i', '--inter', type=float, dest='inter_pkts', metavar='#', default=0.01, help='Interpacket gap (default 10ms)')
 
 args = parser.parse_args();
 
@@ -35,9 +38,10 @@ if args.server:
     PORT = args.port
 
     def capture_packets(from_ip, port, num_packets, out_queue):
-        sniffed = sniff(filter='src {} and dst port {} and udp'.format(from_ip, port), count=num_packets)
+        sniffed = sniff(filter='src {} and port {} and udp'.format(from_ip, port), count=num_packets)
         sniffed_dict = {pkt.id: pkt.time for pkt in sniffed}
-        out_queue.put(sniffed)
+        out_queue.put(sniffed_dict)
+        return
         #_thread.exit()
 
     def connection(con, client, out_queue):
@@ -54,9 +58,10 @@ if args.server:
         out_queue.put(decoded_msg)
         print('Closing connection with {}'.format(client))
         con.close()
+        return
         #_thread.exit()
     
-    cap_queue = queue.Queue();
+    cap_queue = queue.Queue()
     con_queue = queue.Queue()
 
     tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -69,28 +74,33 @@ if args.server:
     # Running the server
     while True:
         process = Thread(target=capture_packets, args=['172.16.0.132', args.alert_port, args.num_pkts, cap_queue])
-        process.start();
+        process.start()
+
         con, client = tcp.accept()
         process2 = Thread(target=connection, args=[con, client, con_queue])
-        process2.start();
+        process2.start()
+
+        # Waiting for the threads to finish
+        while con_queue.empty() or cap_queue.empty():
+            pass
 
         if not cap_queue.empty() and not con_queue.empty():
             cap = cap_queue.get()
             rec = con_queue.get()
-
-            loss = 0
             
-            log = open(time.strftime("%H_%M_%S_%Y_%m_%d")+".csv", "w")
-            log.write('id;delay\n')
+            loss = 0
+            log = open(time.strftime("%d_%m_%Y_%H_%M")+"_delays.csv", "w")
+            log.write('id,delay\n')
             # Rec has info about app packets that were sent, regardless if they
             # were received or not
-            for p in rec.keys():
-                if not p in cap:
-                    loss += 1
+            for pkt_id in rec.keys():
+                if pkt_id in cap.keys():
+                    delay = (cap[pkt_id] - rec[pkt_id]) * 1000
                 else:
-                    log.write(str(p) + ';' + str((cap[p] - rec[p])*1000) + '\n')
-                    print('Packet id {} delay(ms): {}'.format(p, (cap[p] - rec[p])*1000))
-            log.write(';'+str(loss))
+                    delay = 'nan'
+                    loss += 1
+                log.write(str(pkt_id) + ',' + str(delay) + '\n')
+                print('Packet id: {} - Delay: {}'.format(pkt_id,delay))
             log.close()
             print('Packet loss: {}'.format(loss))
     tcp.close()
@@ -99,19 +109,20 @@ if args.server:
 else:
     # Sending packets and storing their ids and sent timestamps
     # TODO: Set correct TOS and DSCP fields
-    pkts_sent = send(IP(dst=args.host, id=range(1,args.num_pkts+1),tos=192)/UDP(dport=args.alert_port), return_packets=True)
+    pkts_sent = send(IP(dst=args.host, id=range(1,args.num_pkts+1),tos=192)/UDP(dport=args.alert_port),
+                                                inter=args.inter_pkts, return_packets=True)
     
     # Creating a dict with id as key for timestamp of sent packets
     infos = {p.id:p.sent_time for p in pkts_sent}
 
     # Sending infos to the server
+    encoded_msg = json.dumps(infos).encode('utf-8')
+
     HOST = args.host
     PORT = args.port
     tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     dest = (HOST, PORT)
     tcp.connect(dest)
-    
-    encoded_msg = json.dumps(infos).encode('utf-8')
     tcp.sendall(encoded_msg)
     tcp.close()
     
