@@ -19,6 +19,7 @@ group.add_argument('-c', '--client', dest='host', metavar='host', help='run in c
 
 client_server_group = parser.add_argument_group('Client/Server')
 client_server_group.add_argument('-p','--port', dest='port', metavar='#', type=int, default=6000, help='server port to listen on/connect to')
+client_server_group.add_argument('-a', '--alert-port', dest='alert_port', metavar='#', type=int, default=6000, help='port in which to send/sniff alert packets')
 
 server_group = parser.add_argument_group('Server specific')
 
@@ -67,7 +68,7 @@ if args.server:
 
     # Running the server
     while True:
-        process = Thread(target=capture_packets, args=['172.16.0.132', 60000, 50, cap_queue])
+        process = Thread(target=capture_packets, args=['172.16.0.132', args.alert_port, args.num_pkts, cap_queue])
         process.start();
         con, client = tcp.accept()
         process2 = Thread(target=connection, args=[con, client, con_queue])
@@ -98,7 +99,7 @@ if args.server:
 else:
     # Sending packets and storing their ids and sent timestamps
     # TODO: Set correct TOS and DSCP fields
-    pkts_sent = send(IP(dst=args.host, id=range(1,args.num_pkts+1),tos=192)/UDP(dport=60000), return_packets=True)
+    pkts_sent = send(IP(dst=args.host, id=range(1,args.num_pkts+1),tos=192)/UDP(dport=args.alert_port), return_packets=True)
     
     # Creating a dict with id as key for timestamp of sent packets
     infos = {p.id:p.sent_time for p in pkts_sent}
