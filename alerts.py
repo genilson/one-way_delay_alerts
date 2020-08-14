@@ -1,8 +1,10 @@
 import argparse
 import json
+import queue
 import socket
 import _thread
 import time
+from threading import Thread
 from scapy.all import *
 
 parser = argparse.ArgumentParser(description='Sends/receives medical alerts from WBAN and calculates package delay and package loss',
@@ -23,30 +25,21 @@ server_group = parser.add_argument_group('Server specific')
 client_group = parser.add_argument_group('Client specific')
 client_group.add_argument('-n', '--num-packets', type=int, dest='num_pkts', metavar='#', default=50, help='number of packets to send')
 
-# SUBCOMANDOS
-# subparsers = parser.add_subparsers(help='Client or Server mode')
-
-# server_parser = subparsers.add_parser('server', help='run in server mode')
-# server_parser.add_argument('-t', help='timeout')
-# server_parser.add_argument('-p','--port', dest='port', metavar='#', type=int, default=6000, help='server port to listen on')
-
-# client_parser = subparsers.add_parser('client', help='run in client mode')
-# client_parser.add_argument('-n', help='number of packets')
-# client_parser.add_argument('-p','--port', dest='port', metavar='#', type=int, default=6000, help='server port to connect to')
-
 args = parser.parse_args();
 
 #Server mode
 if args.server:  
 
-    # Put it inside the thread
-    #sniffed = sniff(filter='port 50000')
-
-
     HOST = ''
     PORT = args.port
 
-    def connection(con, client):
+    def capture_packets(from_ip, port, num_packets, out_queue):
+        sniffed = sniff(filter='src {} and dst port {} and udp'.format(from_ip, port), count=num_packets)
+        sniffed_dict = {pkt.id: pkt.time for pkt in sniffed}
+        out_queue.put(sniffed)
+        #_thread.exit()
+
+    def connection(con, client, out_queue):
         print('Connection from {} established'.format(client))
         chunks = []
         while True:
@@ -55,11 +48,15 @@ if args.server:
                 break
             else:
                 chunks.append(msg)
-        decoded_msg = json.loads(b''.join(chunks).decode())
-        print(decoded_msg)
+        decoded_msg = {int(pkt_id): float(pkt_sent_time) for (pkt_id,pkt_sent_time) in json.loads(
+            b''.join(chunks).decode()).items()}
+        out_queue.put(decoded_msg)
         print('Closing connection with {}'.format(client))
         con.close()
-        _thread.exit()
+        #_thread.exit()
+    
+    cap_queue = queue.Queue();
+    con_queue = queue.Queue()
 
     tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
@@ -70,21 +67,38 @@ if args.server:
 
     # Running the server
     while True:
+        process = Thread(target=capture_packets, args=['172.16.0.132', 60000, 50, cap_queue])
+        process.start();
         con, client = tcp.accept()
-        _thread.start_new_thread(connection, tuple([con, client]))
+        process2 = Thread(target=connection, args=[con, client, con_queue])
+        process2.start();
 
-    # Not supposed to be here
-    # for p in sniffed:
-    #     print(p.time)
+        if not cap_queue.empty() and not con_queue.empty():
+            cap = cap_queue.get()
+            rec = con_queue.get()
 
+            loss = 0
+            
+            log = open(time.strftime("%H_%M_%S_%Y_%m_%d")+".csv", "w")
+            log.write('id;delay\n')
+            # Rec has info about app packets that were sent, regardless if they
+            # were received or not
+            for p in rec.keys():
+                if not p in cap:
+                    loss += 1
+                else:
+                    log.write(str(p) + ';' + str((cap[p] - rec[p])*1000) + '\n')
+                    print('Packet id {} delay(ms): {}'.format(p, (cap[p] - rec[p])*1000))
+            log.write(';'+str(loss))
+            log.close()
+            print('Packet loss: {}'.format(loss))
     tcp.close()
 
 # Client mode
 else:
-    print('Teste')
     # Sending packets and storing their ids and sent timestamps
     # TODO: Set correct TOS and DSCP fields
-    pkts_sent = send(IP(dst=args.host, id=RandShort())/UDP(), count=args.num_pkts, return_packets=True)
+    pkts_sent = send(IP(dst=args.host, id=range(1,args.num_pkts+1),tos=192)/UDP(dport=60000), return_packets=True)
     
     # Creating a dict with id as key for timestamp of sent packets
     infos = {p.id:p.sent_time for p in pkts_sent}
