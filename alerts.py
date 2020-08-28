@@ -1,10 +1,8 @@
 import argparse
 import json
-import queue
 import socket
-import _thread
+import sys
 import time
-from threading import Thread
 from scapy.all import *
 
 parser = argparse.ArgumentParser(description='Sends/receives medical alerts from WBAN and calculates package delay and package loss',
@@ -23,6 +21,8 @@ client_server_group.add_argument('-a', '--alert-port', dest='alert_port', metava
                                  help='port in which to send/sniff alert packets (default 6000)')
 
 server_group = parser.add_argument_group('Server specific')
+# Timeout 
+server_group.add_argument('-t', '--time-out', type=float, dest='timeout', metavar='#', default=5.0, help='Timeout in seconds (default 5s)')
 
 client_group = parser.add_argument_group('Client specific')
 client_group.add_argument('-n', '--num-packets', type=int, dest='num_pkts', metavar='#', default=50, help='number of packets to send (default 50)')
@@ -37,35 +37,13 @@ if args.server:
     HOST = ''
     PORT = args.port
 
-    def capture_packets(port, num_packets, out_queue):
-        sniffed = sniff(filter='udp port {}'.format(port), timeout=60, count=num_packets)
-        sniffed_dict = {pkt.id: pkt.time for pkt in sniffed}
-        out_queue.put(sniffed_dict)
-        return
-        # 
-        #_thread.exit()
-        #
-        #Thread.exit() or just return?
+    # Global variables
+    # Time that last packet was received
+    last_pkt_time = 0.0
 
-    def connection(con, client, out_queue):
-        print('Connection from {} established'.format(client))
-        chunks = []
-        while True:
-            msg = con.recv(1024)
-            if not msg:
-                break
-            else:
-                chunks.append(msg)
-        print('Closing connection with {}'.format(client))
-        decoded_msg = {int(pkt_id): float(pkt_sent_time) for (pkt_id,pkt_sent_time) in json.loads(
-            b''.join(chunks).decode()).items()}
-        out_queue.put(decoded_msg)
-        con.close()
-        return
-        #_thread.exit()
-    
-    cap_queue = queue.Queue()
-    con_queue = queue.Queue()
+    def time_last_packet(pkt):
+        global last_pkt_time
+        last_pkt_time = pkt.time
 
     tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
@@ -77,39 +55,66 @@ if args.server:
     try:
         # Running the server
         while True:
-            process = Thread(target=capture_packets, args=[args.alert_port, args.num_pkts, cap_queue])
-            process.start()
+            last_pkt_time = 0.0
+
+            # Setting asynchronous sniffer
+            result = AsyncSniffer(prn=time_last_packet,filter='udp port {}'.format(args.alert_port), count=args.num_pkts)
+
+            result.start()
+
+            print('Sniffing packets on port {}'.format(args.alert_port))
+
+            # The loop only leaves when num_pkts packets were received, or
+            # timeout after last received packet is reached                                                       
+            while result.running: 
+                if last_pkt_time != 0.0:
+                    if (time.time() - last_pkt_time) >= args.timeout:
+                        result.stop()
+
+            # Giving the sniffer the time it needs to stop
+            time.sleep(0.5)
+
+            # Dictionary with info about sniffed packets           
+            sniffed_dict = {pkt.id: pkt.time for pkt in result.results}
+
+            # Getting info from the client about packets that were sent
             con, client = tcp.accept()
-            process2 = Thread(target=connection, args=[con, client, con_queue])
-            process2.start()
+            print('Connection from {} established'.format(client))
+            chunks = []
+            while True:
+                msg = con.recv(1024)
+                if not msg:
+                    break
+                else:
+                    chunks.append(msg)
+            print('Closing connection with {}'.format(client))
+            #print('Got {} bytes from {}'.format(sys.getsizeof(chunks),client))
+            con.close()
 
-            # Waiting for the threads to finish
-            while con_queue.empty() or cap_queue.empty():
-                pass
+            # Decoding the message into a dictionary
+            recv_dict = {int(pkt_id): float(pkt_sent_time) for (pkt_id,pkt_sent_time) in json.loads(
+                b''.join(chunks).decode()).items()}
+            
+            # Lost packets get a nan value for delay. Total loss is logged
+            loss = 0
+            log = open(time.strftime('%d_%m_%Y_%H_%M_%S')+'_delays.csv', 'w')
+            log.write('id,delay\n')
 
-            if not cap_queue.empty() and not con_queue.empty():
-                cap = cap_queue.get()
-                rec = con_queue.get()
-                
-                loss = 0
-                log = open(time.strftime('%d_%m_%Y_%H_%M_%S')+'_delays.csv', 'w')
-                log.write('id,delay\n')
-                # Rec has info about app packets that were sent, regardless if they
-                # were received or not
-                for pkt_id in rec.keys():
-                    if pkt_id in cap.keys():
-                        delay = (cap[pkt_id] - rec[pkt_id]) * 1000
-                    else:
-                        delay = 'nan'
-                        loss += 1
-                    log.write(str(pkt_id) + ',' + str(delay) + '\n')
-                    print('Packet id: {} - Delay: {}'.format(pkt_id,delay))
-                log.close()
-                print('Packet loss: {}'.format(loss))
+            # Recv_dict has info about app packets that were sent, regardless if they
+            # were received or not
+            for pkt_id in recv_dict.keys():
+                if pkt_id in sniffed_dict.keys():
+                    delay = (sniffed_dict[pkt_id] - recv_dict[pkt_id]) * 1000
+                else:
+                    delay = 'nan'
+                    loss += 1
+                log.write(str(pkt_id) + ',' + str(delay) + '\n')
+                print('Packet id: {} - Delay: {}'.format(pkt_id,delay))
+            log.write('loss, {}'.format(loss))
+            log.close()
+            print('Packet loss: {}'.format(loss))
     except KeyboardInterrupt:
         print('Interrupting the server')
-        process.join()
-        process2.join()
     tcp.close()
 
 # Client mode
@@ -131,6 +136,7 @@ else:
     dest = (HOST, PORT)
     tcp.connect(dest)
     tcp.sendall(encoded_msg)
+    #print('Sent {} bytes to {}'.format(sys.getsizeof(bytes(encoded_msg)), args.host))
     tcp.close()
     
 # if args.server and 'num_pkts' in vars(args):
