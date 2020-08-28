@@ -38,7 +38,7 @@ if args.server:
     PORT = args.port
 
     def capture_packets(port, num_packets, out_queue):
-        sniffed = sniff(filter='port {} and udp'.format(port), timeout=60, count=num_packets)
+        sniffed = sniff(filter='udp port {}'.format(port), timeout=60, count=num_packets)
         sniffed_dict = {pkt.id: pkt.time for pkt in sniffed}
         out_queue.put(sniffed_dict)
         return
