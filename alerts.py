@@ -39,6 +39,7 @@ if args.server:
 
     def capture_packets(port, num_packets, out_queue):
         sniffed = sniff(filter='udp port {}'.format(port), timeout=60, count=num_packets)
+        time.sleep(1)
         sniffed_dict = {pkt.id: pkt.time for pkt in sniffed}
         out_queue.put(sniffed_dict)
         return
@@ -118,7 +119,7 @@ else:
     # TODO: Set correct TOS and DSCP fields
     pkts_sent = send(IP(dst=args.host, id=range(1,args.num_pkts+1),tos=192)/UDP(dport=args.alert_port),
                                                 inter=args.inter_pkts, return_packets=True)
-    
+    time.sleep(1)
     # Creating a dict with id as key for timestamp of sent packets
     infos = {p.id:p.sent_time for p in pkts_sent}
 
