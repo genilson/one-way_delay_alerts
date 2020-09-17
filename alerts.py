@@ -23,6 +23,9 @@ client_server_group.add_argument('-a', '--alert-port', dest='alert_port', metava
 server_group = parser.add_argument_group('Server specific')
 # Timeout 
 server_group.add_argument('-t', '--time-out', type=float, dest='timeout', metavar='#', default=5.0, help='Timeout in seconds after last packet received (default 5s)')
+# Log names
+server_group.add_argument('-l', '--log-prefix', dest='log_prefix', type=str, default='', metavar='log prefix',
+                          help='Prefix for log file. Base name is dd_mm_yy_hh_mm_ss_delays.csv')
 
 client_group = parser.add_argument_group('Client specific')
 client_group.add_argument('-n', '--num-packets', type=int, dest='num_pkts', metavar='#', default=50, help='number of packets to send (default 50)')
@@ -102,7 +105,7 @@ if args.server:
             
             # Lost packets get a nan value for delay. Total loss is logged
             loss = 0
-            log = open(time.strftime('%d_%m_%Y_%H_%M_%S')+'_delays.csv', 'w')
+            log = open(args.log_prefix+time.strftime('%d_%m_%Y_%H_%M_%S')+'_delays.csv', 'w')
             log.write('id,delay\n')
 
             print('Calculating and logging packets delays and packet loss')
@@ -139,8 +142,7 @@ else:
     # Giving the sniffer time to start
     time.sleep(0.5)
 
-    # Sending packets and storing their ids and sent timestamps
-    # TODO: Set correct TOS and DSCP fields
+    # Sending packets and storing their ids and timestamps
     pkts_sent = send(IP(dst=args.host, id=range(1,args.num_pkts+1),tos=192)/UDP(dport=args.alert_port),
                                                 inter=args.inter_pkts, return_packets=True)
     
