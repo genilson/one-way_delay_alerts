@@ -106,9 +106,6 @@ if args.server:
             # Dictionary with info about sniffed packets
             sniffed_dict = {int(pkt.id): (float(pkt.time),int(timer_dict[pkt.id])) for pkt in result.results}
 
-            print('Pacotes capturados: ')
-            print(sniffed_dict)
-
             # Getting info from the client about packets that were sent
             con, client = tcp.accept()
             print('Connection from {} established'.format(client))
@@ -126,8 +123,6 @@ if args.server:
             # Decoding the message into a dictionary
             recv_dict = {int(pkt_id): (float(pkt_sent_time),int(pkt_sent_counter)) for (pkt_id,(pkt_sent_time,pkt_sent_counter)) in json.loads(
                 b''.join(chunks).decode()).items()}
-            print('Pacotes enviados: ')
-            print(recv_dict)
             
             # Lost packets get a nan value for delay. Total loss is logged
             loss = 0
@@ -176,17 +171,23 @@ else:
 
     for i in range(1,args.num_pkts+1):
         pkt = IP(dst=args.host, id=i,tos=192)/UDP(dport=args.alert_port)
-        pkts_sent.append(send(pkt, inter=args.inter_pkts, return_packets=True))
-        # Requesting timer from the arduino 
+        # Requesting timer from the arduino, the reply will be on the
+        # serial buffer
         data.write(b'r')
+        list_item = send(pkt, verbose=False, return_packets=True)
+        # Read serial buffer after sending the packet so this operation does
+        # not add to the delay
         counter = data.readline().strip()
+
+        pkts_sent.append(list_item)
+
         # Storing timer/counter value for each package
         timer_dict[i] = counter.decode('utf-8')
-    
+        # Waiting for required IPT 
+        time.sleep(args.inter_pkts)
+
     # Creating a dict with id as key for timestamp of sent packets
     infos = {p[0].id:(p[0].sent_time,timer_dict[p[0].id]) for p in pkts_sent}
-    print('Informações enviadas ao servidor: ')
-    print(infos)
 
     # Sending infos to the server
     encoded_msg = json.dumps(infos).encode('utf-8')
